@@ -1,0 +1,5 @@
+invoice_number,customer,amount,issued_on,due_on,paid_on,notes
+EX-001,Acme Design,2450.00,2026-11-01,2026-11-30,,Brand strategy
+EX-002,Bluebird Labs,5800.00,2026-10-15,2026-11-15,,Product discovery
+EX-003,Open Field,1200.00,2026-10-01,2026-10-31,2026-11-04,Consultation
+
