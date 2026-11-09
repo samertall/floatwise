@@ -132,7 +132,7 @@ Calculations are transparent heuristics or deterministic aggregates. Some requir
 | `risk.watch` | Watch-list invoices | Open invoices with heuristic score below 45. |
 | `risk.mean_score` | Average open-invoice risk score | Mean of the explainable heuristic risk scores. |
 | `risk.peak_score` | Highest invoice risk score | Maximum heuristic risk score among open invoices. |
-| `risk.large_exposure` | High-value invoices (≥ $5k) | Open invoices of five thousand dollars or more. |
+| `risk.large_exposure` | High-value invoices (≥ $5k) | Open balances of five thousand dollars or more. |
 | `risk.top_customer` | Largest customer share | Share of total open receivables owed by the largest customer. |
 | `risk.worst_lateness` | Worst historic customer lateness | Maximum median days late across customers with paid invoices. |
 | `risk.aged_exposure` | Overdue more than 30 days | Open receivables past due by over thirty days. |

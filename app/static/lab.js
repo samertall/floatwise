@@ -23,7 +23,7 @@
   };
 
   async function api(path,options={}) {
-    const result=await fetch(path,options);
+    const result=await (window.FloatwiseAuth?.fetch || fetch)(path,options);
     if(!result.ok){let detail;try{detail=(await result.json()).detail;}catch{detail=`HTTP ${result.status}`;}
       if(Array.isArray(detail))detail=detail.map(x=>x.msg||x.type||JSON.stringify(x)).join('; ');
       throw new Error(String(detail));}
@@ -176,6 +176,7 @@
     $('#ops-form').addEventListener('submit',saveForm);
     document.addEventListener('keydown',e=>{if(e.key==='Escape')closeForm();});
     $$('.nav-link[data-view="lab"], .nav-link[data-view="operations"]').forEach(b=>b.addEventListener('click',load));
+    window.addEventListener('floatwise:updated',load);
     load();
   }
   document.addEventListener('DOMContentLoaded',setup);

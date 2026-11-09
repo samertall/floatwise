@@ -35,7 +35,7 @@ def collection_priority(invoice: dict, today: date, lateness: dict[str, int]) ->
     days_overdue = max(0, (today - parse_day(invoice["due_on"])).days)
     past_behavior = lateness.get(invoice["customer"].strip().casefold(), 5)
     score = 10 + min(60, days_overdue * 2)
-    if invoice["amount_cents"] >= 500_000:
+    if invoice.get("balance_cents",invoice["amount_cents"]) >= 500_000:
         score += 10
     if past_behavior > 10:
         score += 20
@@ -66,7 +66,7 @@ def summarize(invoices: list[dict], today: date) -> dict:
     paid = [i for i in invoices if i["paid_on"]]
     overdue = [i for i in unpaid if parse_day(i["due_on"]) < today]
     due_soon = [i for i in unpaid if today <= parse_day(i["due_on"]) <= today + timedelta(days=7)]
-    value = lambda items: sum(i["amount_cents"] for i in items)
+    value = lambda items: sum(i.get('balance_cents',i['amount_cents']) for i in items)
     total_count = len(invoices)
     return {
         "total_invoices": total_count,
@@ -74,7 +74,7 @@ def summarize(invoices: list[dict], today: date) -> dict:
         "overdue_cents": value(overdue),
         "overdue_count": len(overdue),
         "due_soon_cents": value(due_soon),
-        "paid_cents": value(paid),
+        "paid_cents": sum(i.get('paid_cents',i['amount_cents'] if i['paid_on'] else 0) for i in invoices),
         "paid_count": len(paid),
         "collection_rate_pct": round(100 * len(paid) / total_count, 1) if total_count else 0,
     }
@@ -105,7 +105,7 @@ def forecast(
             if due < today:
                 receipt_day = max(receipt_day, today + timedelta(days=3 + max(0, assumptions["delay"])))
             weight = assumptions["overdue_weight"] if due < today else assumptions["on_time_weight"]
-            receipts[receipt_day] += round(invoice["amount_cents"] * weight / 100)
+            receipts[receipt_day] += round(invoice.get('balance_cents',invoice['amount_cents']) * weight / 100)
 
         points = []
         cash = float(opening)

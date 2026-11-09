@@ -54,9 +54,17 @@ def connect(path: str | Path) -> Iterator[sqlite3.Connection]:
 
 
 def fetch_invoices(connection: sqlite3.Connection) -> list[dict]:
-    return [dict(row) for row in connection.execute(
-        "SELECT * FROM invoices ORDER BY due_on ASC, invoice_number ASC"
-    )]
+    return [dict(row) for row in connection.execute('''
+        SELECT i.*,
+            CASE WHEN i.paid_on IS NOT NULL AND p.total IS NULL THEN i.amount_cents
+                 ELSE COALESCE(p.total,0) END AS paid_cents,
+            i.amount_cents - CASE WHEN i.paid_on IS NOT NULL AND p.total IS NULL THEN i.amount_cents
+                 ELSE COALESCE(p.total,0) END AS balance_cents
+        FROM invoices i
+        LEFT JOIN (SELECT invoice_id, SUM(amount_cents) AS total
+                   FROM invoice_payments GROUP BY invoice_id) p ON p.invoice_id = i.id
+        ORDER BY i.due_on ASC, i.invoice_number ASC
+    ''')]
 
 
 def fetch_settings(connection: sqlite3.Connection) -> dict[str, int]:

@@ -28,6 +28,10 @@ def money(items: list[dict], key: str = 'amount_cents') -> int:
     return sum(i[key] for i in items)
 
 
+def open_money(items: list[dict]) -> int:
+    return sum(i.get('balance_cents',i['amount_cents']) for i in items)
+
+
 def avg(items: list[int]) -> int:
     return round(mean(items)) if items else 0
 
@@ -59,7 +63,7 @@ def ctx_for(invoices: list[dict], resources: dict[str, list[dict]], settings: di
         key = i['customer'].strip().casefold()
         customer_counts[key] += 1
         if not i['paid_on']:
-            customer_values[key] += i['amount_cents']
+            customer_values[key] += i.get('balance_cents',i['amount_cents'])
         else:
             customer_paid.add(key)
     customer_late = analytics.customer_lateness(invoices)
@@ -95,15 +99,15 @@ def feature(group: str, key: str, label: str, kind: str, description: str, fn: C
 
 # 01. Invoice portfolio — ten ways to understand current receivables.
 feature('Receivables', 'ar.unpaid', 'Unpaid invoices', 'count', 'Number of invoices awaiting settlement.', lambda c:len(c['unpaid']))
-feature('Receivables', 'ar.balance', 'Unpaid invoice balance', 'money', 'Total amount invoiced but not yet paid.', lambda c:money(c['unpaid']))
+feature('Receivables', 'ar.balance', 'Unpaid invoice balance', 'money', 'Total amount invoiced but not yet paid.', lambda c:open_money(c['unpaid']))
 feature('Receivables', 'ar.average', 'Average unpaid invoice', 'money', 'Mean open invoice value.', lambda c:avg([i['amount_cents'] for i in c['unpaid']]))
 feature('Receivables', 'ar.median', 'Median unpaid invoice', 'money', 'Middle open invoice amount; less sensitive to outliers.', lambda c:med([i['amount_cents'] for i in c['unpaid']]))
 feature('Receivables', 'ar.largest', 'Largest unpaid invoice', 'money', 'Single largest open receivable.', lambda c:safe_max([i['amount_cents'] for i in c['unpaid']]))
 feature('Receivables', 'ar.smallest', 'Smallest unpaid invoice', 'money', 'Smallest open receivable.', lambda c:min((i['amount_cents'] for i in c['unpaid']),default=0))
 feature('Receivables', 'ar.today', 'Due today', 'count', 'Unpaid invoices reaching their due date today.', lambda c:sum(i['due_on']==c['today'].isoformat() for i in c['unpaid']))
 feature('Receivables', 'ar.week', 'Due in next 7 days', 'count', 'Upcoming unpaid invoices including today.', lambda c:sum(0 <= -days(i['due_on'],c['today']) <= 7 for i in c['unpaid']))
-feature('Receivables', 'ar.month', 'Due in next 30 days', 'money', 'Receivables due within 30 days.', lambda c:money([i for i in c['unpaid'] if 0 <= -days(i['due_on'],c['today']) <= 30]))
-feature('Receivables', 'ar.later', 'Due beyond 30 days', 'money', 'Longer-dated open invoice balance.', lambda c:money([i for i in c['unpaid'] if -days(i['due_on'],c['today']) > 30]))
+feature('Receivables', 'ar.month', 'Due in next 30 days', 'money', 'Receivables due within 30 days.', lambda c:open_money([i for i in c['unpaid'] if 0 <= -days(i['due_on'],c['today']) <= 30]))
+feature('Receivables', 'ar.later', 'Due beyond 30 days', 'money', 'Longer-dated open invoice balance.', lambda c:open_money([i for i in c['unpaid'] if -days(i['due_on'],c['today']) > 30]))
 
 # 02. Customer intelligence — concentration, coverage and relationship depth.
 feature('Customers', 'customers.distinct', 'Invoiced customers', 'count', 'Unique customers in invoice history.', lambda c:len(c['customer_counts']))
@@ -111,8 +115,8 @@ feature('Customers', 'customers.active', 'Customers with open balances', 'count'
 feature('Customers', 'customers.repeat', 'Repeat customers', 'count', 'Customers appearing on two or more invoices.', lambda c:sum(n>=2 for n in c['customer_counts'].values()))
 feature('Customers', 'customers.payers', 'Customers who paid', 'count', 'Customers with at least one paid invoice.', lambda c:len(c['customer_paid']))
 feature('Customers', 'customers.peak', 'Largest customer exposure', 'money', 'Maximum outstanding balance for one customer.', lambda c:safe_max(list(c['customer_values'].values())))
-feature('Customers', 'customers.top3', 'Top-three exposure share', 'percent', 'Share of outstanding balance held by the three largest customers.', lambda c:pct(sum(sorted(c['customer_values'].values(),reverse=True)[:3]),money(c['unpaid'])))
-feature('Customers', 'customers.average_balance', 'Average open balance per customer', 'money', 'Outstanding amount divided by customers with an open balance.', lambda c:round(money(c['unpaid'])/sum(v>0 for v in c['customer_values'].values())) if any(c['customer_values'].values()) else 0)
+feature('Customers', 'customers.top3', 'Top-three exposure share', 'percent', 'Share of outstanding balance held by the three largest customers.', lambda c:pct(sum(sorted(c['customer_values'].values(),reverse=True)[:3]),open_money(c['unpaid'])))
+feature('Customers', 'customers.average_balance', 'Average open balance per customer', 'money', 'Outstanding amount divided by customers with an open balance.', lambda c:round(open_money(c['unpaid'])/sum(v>0 for v in c['customer_values'].values())) if any(c['customer_values'].values()) else 0)
 feature('Customers', 'customers.invoice_depth', 'Invoices per customer', 'decimal', 'Average invoice relationships per customer.', lambda c:round(len(c['invoices'])/len(c['customer_counts']),1) if c['customer_counts'] else 0)
 feature('Customers', 'customers.payer_share', 'Customer payment coverage', 'percent', 'Share of invoiced customers who have made a payment.', lambda c:pct(len(c['customer_paid']),len(c['customer_counts'])))
 feature('Customers', 'customers.profiles', 'Enriched customer profiles', 'count', 'Customers with manually managed profiles and terms.', lambda c:len(c['customers']))
@@ -131,12 +135,12 @@ feature('Payments', 'payments.largest', 'Largest settled invoice', 'money', 'Lar
 
 # 04. Collections — aging buckets and follow-up workload.
 feature('Collections', 'collections.overdue_count', 'Overdue invoices', 'count', 'Open invoices past their due date.', lambda c:len(c['overdue']))
-feature('Collections', 'collections.overdue_value', 'Overdue receivables', 'money', 'Open balance already past due.', lambda c:money(c['overdue']))
-feature('Collections', 'collections.age_1_7', '1–7 days overdue', 'money', 'Recently overdue invoice balance.', lambda c:money([i for i in c['overdue'] if 1<=days(i['due_on'],c['today'])<=7]))
-feature('Collections', 'collections.age_8_30', '8–30 days overdue', 'money', 'Early-stage past-due invoice balance.', lambda c:money([i for i in c['overdue'] if 8<=days(i['due_on'],c['today'])<=30]))
-feature('Collections', 'collections.age_31_60', '31–60 days overdue', 'money', 'Mid-stage past-due invoice balance.', lambda c:money([i for i in c['overdue'] if 31<=days(i['due_on'],c['today'])<=60]))
-feature('Collections', 'collections.age_61_90', '61–90 days overdue', 'money', 'Late-stage past-due invoice balance.', lambda c:money([i for i in c['overdue'] if 61<=days(i['due_on'],c['today'])<=90]))
-feature('Collections', 'collections.age_90plus', 'Over 90 days overdue', 'money', 'Severely aged receivables.', lambda c:money([i for i in c['overdue'] if days(i['due_on'],c['today'])>90]))
+feature('Collections', 'collections.overdue_value', 'Overdue receivables', 'money', 'Open balance already past due.', lambda c:open_money(c['overdue']))
+feature('Collections', 'collections.age_1_7', '1–7 days overdue', 'money', 'Recently overdue invoice balance.', lambda c:open_money([i for i in c['overdue'] if 1<=days(i['due_on'],c['today'])<=7]))
+feature('Collections', 'collections.age_8_30', '8–30 days overdue', 'money', 'Early-stage past-due invoice balance.', lambda c:open_money([i for i in c['overdue'] if 8<=days(i['due_on'],c['today'])<=30]))
+feature('Collections', 'collections.age_31_60', '31–60 days overdue', 'money', 'Mid-stage past-due invoice balance.', lambda c:open_money([i for i in c['overdue'] if 31<=days(i['due_on'],c['today'])<=60]))
+feature('Collections', 'collections.age_61_90', '61–90 days overdue', 'money', 'Late-stage past-due invoice balance.', lambda c:open_money([i for i in c['overdue'] if 61<=days(i['due_on'],c['today'])<=90]))
+feature('Collections', 'collections.age_90plus', 'Over 90 days overdue', 'money', 'Severely aged receivables.', lambda c:open_money([i for i in c['overdue'] if days(i['due_on'],c['today'])>90]))
 feature('Collections', 'collections.avg_age', 'Average overdue age', 'days', 'Average number of days late on overdue open invoices.', lambda c:avg([days(i['due_on'],c['today']) for i in c['overdue']]))
 feature('Collections', 'collections.max_age', 'Oldest unpaid age', 'days', 'Longest overdue time of an unpaid invoice.', lambda c:safe_max([days(i['due_on'],c['today']) for i in c['overdue']]))
 feature('Collections', 'collections.task_queue', 'Outstanding collection tasks', 'count', 'Open collection follow-ups in the task workspace.', lambda c:sum(t['category']=='collection' and t['status']=='open' for t in c['tasks']))
@@ -183,10 +187,10 @@ feature('Risk', 'risk.high', 'High-risk invoices', 'count', 'Open invoices with 
 feature('Risk', 'risk.watch', 'Watch-list invoices', 'count', 'Open invoices with heuristic score below 45.', lambda c:sum(i['risk_level']=='Watch' for i in c['priorities']))
 feature('Risk', 'risk.mean_score', 'Average open-invoice risk score', 'decimal', 'Mean of the explainable heuristic risk scores.', lambda c:round(mean([i['risk_score'] for i in c['priorities']]),1) if c['priorities'] else 0)
 feature('Risk', 'risk.peak_score', 'Highest invoice risk score', 'count', 'Maximum heuristic risk score among open invoices.', lambda c:safe_max([i['risk_score'] for i in c['priorities']]))
-feature('Risk', 'risk.large_exposure', 'High-value invoices (≥ $5k)', 'count', 'Open invoices of five thousand dollars or more.', lambda c:sum(i['amount_cents']>=500_000 for i in c['unpaid']))
-feature('Risk', 'risk.top_customer', 'Largest customer share', 'percent', 'Share of total open receivables owed by the largest customer.', lambda c:pct(safe_max(list(c['customer_values'].values())),money(c['unpaid'])))
+feature('Risk', 'risk.large_exposure', 'High-value invoices (≥ $5k)', 'count', 'Open balances of five thousand dollars or more.', lambda c:sum(i.get('balance_cents',i['amount_cents'])>=500_000 for i in c['unpaid']))
+feature('Risk', 'risk.top_customer', 'Largest customer share', 'percent', 'Share of total open receivables owed by the largest customer.', lambda c:pct(safe_max(list(c['customer_values'].values())),open_money(c['unpaid'])))
 feature('Risk', 'risk.worst_lateness', 'Worst historic customer lateness', 'days', 'Maximum median days late across customers with paid invoices.', lambda c:safe_max(list(c['customer_late'].values())))
-feature('Risk', 'risk.aged_exposure', 'Overdue more than 30 days', 'money', 'Open receivables past due by over thirty days.', lambda c:money([i for i in c['overdue'] if days(i['due_on'],c['today'])>30]))
+feature('Risk', 'risk.aged_exposure', 'Overdue more than 30 days', 'money', 'Open receivables past due by over thirty days.', lambda c:open_money([i for i in c['overdue'] if days(i['due_on'],c['today'])>30]))
 feature('Risk', 'risk.stress_shortfall', 'Stress-case maximum shortfall', 'money', 'Magnitude of negative stress-case low balance, if any.', lambda c:max(0,-c['forecast']['stress']['low_balance_cents']))
 
 # 09. Operations — the tasks, profiles, and saved views supporting finance teams.
@@ -208,8 +212,8 @@ feature('Health', 'health.invoice_ticket', 'Average invoiced ticket', 'money', '
 feature('Health', 'health.daily_burn', 'Modeled daily operating burn', 'money', 'Monthly expense baseline divided by thirty days.', lambda c:round(c['settings']['monthly_expenses_cents']/30))
 feature('Health', 'health.cash_coverage', 'Opening cash coverage', 'days', 'Days of modeled operating costs covered by opening balance, excluding receipts.', lambda c:round(c['settings']['opening_balance_cents']/(c['settings']['monthly_expenses_cents']/30)) if c['settings']['monthly_expenses_cents'] else 0)
 feature('Health', 'health.collection_rate', 'Invoice settlement rate', 'percent', 'Paid invoices as a share of all created invoices.', lambda c:pct(len(c['paid']),len(c['invoices'])))
-feature('Health', 'health.overdue_ratio', 'Overdue share of open balance', 'percent', 'Percent of all outstanding receivables past due.', lambda c:pct(money(c['overdue']),money(c['unpaid'])))
-feature('Health', 'health.paid_to_open', 'Paid value relative to open value', 'percent', 'Settled value divided by current unpaid value.', lambda c:pct(money(c['paid']),money(c['unpaid'])))
+feature('Health', 'health.overdue_ratio', 'Overdue share of open balance', 'percent', 'Percent of all outstanding receivables past due.', lambda c:pct(open_money(c['overdue']),open_money(c['unpaid'])))
+feature('Health', 'health.paid_to_open', 'Paid value relative to open value', 'percent', 'Settled value divided by current unpaid value.', lambda c:pct(money(c['paid']),open_money(c['unpaid'])))
 feature('Health', 'health.paid_invoice_share', 'Settled share of invoiced value', 'percent', 'Paid invoice value divided by total invoiced value.', lambda c:pct(money(c['paid']),money(c['invoices'])))
 feature('Health', 'health.task_completion', 'Task completion rate', 'percent', 'Completed work tasks divided by all work tasks.', lambda c:pct(sum(t['status']=='done' for t in c['tasks']),len(c['tasks'])))
 

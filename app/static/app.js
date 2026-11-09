@@ -4,7 +4,7 @@
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
-  const state = { dashboard: null, invoices: [], view: 'overview', scenario: 'base', filter: 'all', search: '' };
+  const state = { dashboard: null, invoices: [], view: 'overview', scenario: 'base', filter: 'all', search: '', paymentInvoice: null };
   const money = (cents) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(cents / 100);
   const compact = (cents) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 }).format(cents / 100);
   const decimal = (cents) => (cents / 100).toFixed(2);
@@ -14,7 +14,7 @@
   let toastTimer;
 
   async function api(path, options = {}) {
-    const response = await fetch(path, options);
+    const response = await (window.FloatwiseAuth?.fetch || fetch)(path, options);
     if (!response.ok) {
       let details;
       try { details = (await response.json()).detail; } catch { details = `Request failed (${response.status})`; }
@@ -130,7 +130,7 @@
   }
 
   function invoiceStatus(i) {
-    if (i.paid_on) return 'paid';
+    if (i.balance_cents === 0 || i.paid_on && i.paid_cents === undefined) return 'paid';
     return i.due_on < state.dashboard.today ? 'overdue' : 'open';
   }
 
@@ -145,7 +145,9 @@
     if (!filtered.length) tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">⌕</div>No invoices match your current filter.</div></td></tr>';
     else tbody.innerHTML = filtered.map(i => {
       const status = invoiceStatus(i);
-      return `<tr><td><strong>${esc(i.invoice_number)}</strong></td><td>${esc(i.customer)}</td><td>${formatDate(i.due_on)}</td><td><strong>${money(i.amount_cents)}</strong></td><td><span class="status-pill ${status}">${status==='overdue'?'Overdue':status==='paid'?'Paid':'Open'}</span></td><td class="align-right"><button class="table-action ${status==='paid'?'paid-action':''}" data-pay-id="${i.id}" data-paid="${status==='paid'}">${status==='paid'?'Undo payment':'Mark paid'}</button></td></tr>`;
+      const partial = (i.paid_cents || 0) > 0 && (i.balance_cents || 0) > 0;
+      const legacyPaid = status==='paid' && i.paid_on && (i.paid_cents || 0) === i.amount_cents;
+      return `<tr><td><strong>${esc(i.invoice_number)}</strong></td><td>${esc(i.customer)}</td><td>${formatDate(i.due_on)}</td><td><strong>${money(i.amount_cents)}</strong>${partial?`<small class="bank-reference">${money(i.balance_cents)} left</small>`:''}</td><td><span class="status-pill ${status}">${partial?'Part-paid':status==='overdue'?'Overdue':status==='paid'?'Paid':'Open'}</span></td><td class="align-right">${status==='paid' ? '<span class="bank-settled">Settled ✓</span>' : `<button class="table-action" data-pay-id="${esc(i.id)}">Record payment</button>`}</td></tr>`;
     }).join('');
     $('#invoice-count').textContent = `${filtered.length} of ${state.invoices.length} invoices`;
     $$('.filter-btn').forEach(button => { button.classList.toggle('active',button.dataset.filter===state.filter); button.setAttribute('aria-pressed', String(button.dataset.filter===state.filter)); });
@@ -173,7 +175,7 @@
       element.classList.toggle('active',active);
       if (active) element.setAttribute('aria-current','page'); else element.removeAttribute('aria-current');
     });
-    $('#breadcrumb-view').textContent = ({overview:'Overview',invoices:'Receivables',forecast:'Forecast studio',lab:'Intelligence lab',operations:'Operations hub'})[view];
+    $('#breadcrumb-view').textContent = ({overview:'Overview',invoices:'Receivables',forecast:'Forecast studio',lab:'Intelligence lab',operations:'Operations hub',banking:'Banking & matching'})[view];
     window.scrollTo({top:0,behavior:'smooth'});
   }
 
@@ -198,15 +200,40 @@
     } catch (error) { toast(error.message,true); }
   }
 
-  async function handlePayment(event) {
+  function openPayment(invoice) {
+    state.paymentInvoice = invoice;
+    $('#payment-form').reset();
+    $('#payment-invoice-context').textContent = `${invoice.invoice_number} · ${invoice.customer} · ${money(invoice.balance_cents)} remaining`;
+    $('#payment-amount').max = decimal(invoice.balance_cents);
+    $('#payment-amount').value = decimal(invoice.balance_cents);
+    $('#payment-date').value = state.dashboard?.today || todayString();
+    $('#payment-backdrop').classList.remove('hidden');
+    $('#payment-amount').focus();
+  }
+
+  function closePayment() {
+    $('#payment-backdrop').classList.add('hidden');
+    state.paymentInvoice = null;
+  }
+
+  async function submitPayment(event) {
+    event.preventDefault();
+    if (!state.paymentInvoice) return;
+    try {
+      await api(`/api/v3/invoices/${encodeURIComponent(state.paymentInvoice.id)}/payments`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({amount:$('#payment-amount').value,paid_on:$('#payment-date').value,reference:$('#payment-reference').value})
+      });
+      closePayment(); toast('Payment recorded. Invoice balance and forecast updated.');
+      await refresh(); window.dispatchEvent(new Event('floatwise:updated'));
+    } catch(error) { toast(error.message,true); }
+  }
+
+  function handlePayment(event) {
     const button = event.target.closest('button[data-pay-id]');
     if (!button) return;
-    const isPaid = button.dataset.paid==='true';
-    if (isPaid && !window.confirm('Mark this invoice as unpaid again?')) return;
-    try {
-      await api(`/api/invoices/${button.dataset.payId}/payment`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({paid_on:isPaid?null:state.dashboard.today})});
-      toast(isPaid?'Payment reversed.':'Invoice marked paid.'); await refresh();
-    } catch(error) {toast(error.message,true);}
+    const invoice = state.invoices.find(item => item.id===button.dataset.payId);
+    if(invoice) openPayment(invoice);
   }
 
   async function handleImport(event) {
@@ -237,7 +264,11 @@
     $('#close-dialog').addEventListener('click',closeDialog);
     $('#cancel-dialog').addEventListener('click',closeDialog);
     $('#invoice-backdrop').addEventListener('click',e => {if (e.target.id==='invoice-backdrop') closeDialog();});
-    document.addEventListener('keydown',e => {if(e.key==='Escape')closeDialog();});
+    $('#payment-close').addEventListener('click',closePayment);
+    $('#payment-cancel').addEventListener('click',closePayment);
+    $('#payment-backdrop').addEventListener('click',e=>{if(e.target.id==='payment-backdrop')closePayment();});
+    $('#payment-form').addEventListener('submit',submitPayment);
+    document.addEventListener('keydown',e => {if(e.key==='Escape'){closeDialog();closePayment();}});
     $('#invoice-form').addEventListener('submit',handleCreate);
     $('#settings-form').addEventListener('submit',handleSettings);
     $('#invoice-table-body').addEventListener('click',handlePayment);

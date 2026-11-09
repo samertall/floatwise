@@ -1,0 +1,4 @@
+Date,Description,Amount,Reference,Currency
+2026-11-02,Acme Design payment INV-2026-001,3450.00,DEMO-TXN-001,USD
+2026-11-03,Workspace internet bill,-75.00,DEMO-TXN-002,USD
+2026-11-04,Software subscription,-39.00,DEMO-TXN-003,USD

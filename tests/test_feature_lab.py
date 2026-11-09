@@ -11,7 +11,7 @@ from app.main import create_app
 
 @pytest.fixture
 def client(tmp_path):
-    return TestClient(create_app(tmp_path / 'v2.db', seed_demo=False))
+    return TestClient(create_app(tmp_path / 'v2.db', seed_demo=False, auth_mode='off'))
 
 
 def metrics(client):

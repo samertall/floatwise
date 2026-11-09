@@ -1,0 +1,32 @@
+# Public READ-ONLY product demonstration, not a private finance production system.
+# A paid persistent disk is intentionally included to protect SQLite workspace data.
+# Review Render pricing and security before activating the Blueprint.
+services:
+  - type: web
+    name: floatwise-demo
+    runtime: python
+    plan: starter
+    buildCommand: pip install .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: FLOATWISE_AUTH_MODE
+        value: demo
+      - key: FLOATWISE_DEMO
+        value: "1"
+      - key: FLOATWISE_ALLOW_SIGNUP
+        value: "0"
+      - key: FLOATWISE_COOKIE_SECURE
+        value: "1"
+      - key: FLOATWISE_AUTH_DB_PATH
+        value: data/accounts.sqlite3
+      - key: FLOATWISE_DEMO_DB_PATH
+        value: data/demo.sqlite3
+      - key: FLOATWISE_WORKSPACE_ROOT
+        value: data/workspaces
+    disk:
+      name: floatwise-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1

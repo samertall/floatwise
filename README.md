@@ -2,7 +2,7 @@
 
 **Know what's coming.** An open-source receivables, cash-flow, and finance operations cockpit for small businesses.
 
-> Version 2.0 adds an **Intelligence Lab with 100 live computed finance signals** and an **Operations Hub** for cash movements, budgets, tasks, customer profiles, and saved views, alongside the original forecasting dashboard.
+> **Version 3.0** adds account authentication, isolated private workspaces, a read-only public demo, six statement-import adapters, partial payments, a bank reconciliation inbox, and an optional Plaid connector. The existing **100 live computed finance signals** and Operations Hub remain available.
 
 **Product concept and implementation by [Samer Tallauze](https://samertall.com).**
 
@@ -16,7 +16,7 @@ Floatwise explores an accessible, lightweight approach to **cash visibility befo
 2. Which unpaid invoices deserve attention first?
 3. What happens to our cash if customers pay later than expected?
 
-This repository is a *working single-workspace MVP and engineering showcase*, not a hosted banking product or a validated business outcome.
+This repository is a *working multi-workspace MVP and engineering showcase*, not a licensed banking product or a validated business outcome.
 
 ## Features
 
@@ -26,7 +26,7 @@ This repository is a *working single-workspace MVP and engineering showcase*, no
 | Scenario forecast | 90-day optimistic, baseline, and stress projections |
 | Explainable collections | Risk scores derived from overdue age, amount, and prior payment behavior |
 | Next best action | Collection recommendations with no external AI dependency |
-| Receivables workspace | Create, list, search, filter, mark paid, and reverse payments |
+| Receivables workspace | Create, list, search, filter, and record exact-cent partial payments |
 | CSV workflow | Transactional import (250 rows/file) and Excel-safer export |
 | Adjustable assumptions | Opening cash and operating expenses update all forecasts |
 | Developer API | OpenAPI documentation at `/docs` and `/openapi.json` |
@@ -38,10 +38,17 @@ This repository is a *working single-workspace MVP and engineering showcase*, no
 | Activity timeline | Records creates, updates, imports, payments, and deletions |
 | Reporting and backups | CSV and JSON resource reports, 100-signal exports, local JSON backup |
 | Flexible horizons | API forecast from 7 through 365 days |
+| Private accounts | Password-hashed accounts, HttpOnly signed-in sessions, CSRF protection, per-account SQLite databases |
+| Read-only public demo | Synthetic data available anonymously; all writes require authentication |
+| Six data connectors | Standard bank CSV, QuickBooks CSV, Xero CSV, QIF, OFX, and ISO 20022 camt.053 |
+| Reconciliation inbox | Idempotent staging, match suggestions, explicit approve/ignore/post actions |
+| Partial-payment ledger | Track multiple receipts per invoice; outstanding and forecast values update correctly |
+| Optional Plaid Link | Encrypted server-side bank tokens, manual incremental transaction sync; requires your own Plaid credentials |
+| Deployment Blueprint | Render-ready HTTPS public demo configuration with persistent disk and signup disabled |
 
 See **[FEATURES.md](FEATURES.md)** for the exact definitions of all 100 new signals. The count refers to individually implemented intelligence calculations, **not** 100 separate enterprise modules. Their values update from actual workspace data.
 
-**No third-party JavaScript, external font requests, analytics trackers, bank integrations, or LLM calls.** The UI works from the same Python server.
+**No analytics trackers, external font requests, or LLM calls.** The core UI works from the Python server; *only if you choose Connect a bank* does it load Plaid's external Link SDK. No bank API is contacted during ordinary CSV imports or forecasting.
 
 ## Run locally
 
@@ -56,9 +63,9 @@ python -m pip install -e '.[dev]'
 python -m uvicorn app.main:app --reload
 ```
 
-Open **http://127.0.0.1:8000**. API documentation is at **http://127.0.0.1:8000/docs**.
+Open **http://127.0.0.1:8000**. API documentation is at **http://127.0.0.1:8000/docs**. Anonymous visitors see synthetic demo data in read-only mode; select **Sign in → Create account** to get an empty, private workspace. Passwords must be at least 12 characters.
 
-On first start, synthetic sample invoices populate an empty database. To begin with a blank workspace, set `FLOATWISE_DEMO=0` before launching. Persistent local data is stored in `data/floatwise.sqlite3`, which is excluded from Git.
+On first start, synthetic invoices populate an empty demo database. Every registered account gets a separate `data/workspaces/<user-id>.sqlite3` database, while account records live in `data/accounts.sqlite3`. All are ignored by Git. Set `FLOATWISE_AUTH_MODE=off` to restore the V1/V2 unrestricted local-only development mode, or `FLOATWISE_AUTH_MODE=required` to require sign-in even for reads. Set `FLOATWISE_DEMO=0` to disable sample-data seeding.
 
 Or run with Docker:
 
@@ -67,7 +74,24 @@ docker build -t floatwise .
 docker run --rm -p 127.0.0.1:8000:8000 -v floatwise-data:/code/data floatwise
 ```
 
-The bind address above is deliberately local-only. **Do not expose this MVP publicly:** it does not include authentication or multi-tenant data isolation.
+The bind address above is deliberately local-only. The app now has local account isolation, but **do not use it for real customer banking data in a public production deployment** without independent security assessment, database hardening, operational backup/restore, email verification, MFA, and compliance review.
+
+### Connect real bank data (optional)
+
+The app supports bank statement imports immediately; importing a file **never contacts a bank**. For the optional [Plaid Transactions API](https://plaid.com/docs/transactions/add-to-app/) connector:
+
+1. Create your own Plaid account with the Transactions product enabled and obtain a client ID and secret. Coverage depends on [supported countries and institutions](https://plaid.com/global/).
+2. Configure the environment variables from [`.env.example`](.env.example): `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`, `PLAID_TOKEN_ENCRYPTION_KEY`, and country codes. Generate a **stable, secret Fernet encryption key** using the command in that file. Preserve this key securely; rotating it without re-encryption makes stored bank tokens unreadable.
+3. Sign in to a private workspace. Open **Banking & matching → Connect a bank**, complete Plaid Link, then press **Sync**. Plaid's access token stays encrypted server-side, never in browser storage. Synced transactions enter the unreviewed queue and **do not automatically affect invoices or the cash book**.
+4. Review each transaction, select a suggested matching invoice, and explicitly confirm reconciliation. Amount and currency must be compatible with the invoice. Pending items are not imported until posted by the provider. Syncs are manual (no webhook processor yet).
+
+Plaid uses its own fees and activation requirements; sandbox credentials only connect to simulated institutions. This repository does not include Plaid credentials, real bank access, or a live account. QuickBooks and Xero integrations currently use **export-file adapters**, not OAuth API sync.
+
+### Public demo deployment (ready to configure)
+
+[`render.yaml`](render.yaml) defines a public **read-only** demo: authentication enabled, signups disabled, HTTPS-only cookies, a health check, and a persistent SQLite volume. To activate it, connect this GitHub repository to a [Render Blueprint](https://render.com/docs/infrastructure-as-code), review the configuration and charges, and deploy. Render provides the public URL after deployment—**GitHub upload alone does not host the Python API**.
+
+**Cost note:** Render persistent disks require a paid service, and disk-attached instances cannot horizontally scale or perform zero-downtime redeploys. Do not set up this deployment with actual user financial data; for real multi-tenant operation, migrate to a managed database and production identity stack. If you want an invitation-only private pilot, change `FLOATWISE_ALLOW_SIGNUP=1` temporarily for onboarding, then disable it; configure backups and access controls first.
 
 ## API walkthrough
 
@@ -78,7 +102,8 @@ curl http://127.0.0.1:8000/api/health
 # Summary, collection priorities, insights, and 90-day forecast
 curl http://127.0.0.1:8000/api/dashboard
 
-# Add an invoice
+# Add an invoice (requires authentication and an X-CSRF-Token from /api/auth/me
+# in default demo mode, or set FLOATWISE_AUTH_MODE=off for local-only API testing)
 curl -X POST http://127.0.0.1:8000/api/invoices \
   -H 'Content-Type: application/json' \
   -d '{"invoice_number":"INV-1001","customer":"Northstar","amount":"2450.00","issued_on":"2026-11-09","due_on":"2026-12-09","notes":"Design engagement"}'
@@ -113,6 +138,14 @@ curl -X POST http://127.0.0.1:8000/api/v2/budgets \
 curl 'http://127.0.0.1:8000/api/v2/forecast?days=180'
 curl 'http://127.0.0.1:8000/api/v2/reports/features?format=csv' -o signals.csv
 curl http://127.0.0.1:8000/api/v2/backup -o backup.json
+
+# V3: supported statement formats and bank-connection status
+curl http://127.0.0.1:8000/api/v3/import/formats
+curl http://127.0.0.1:8000/api/v3/plaid/status
+
+# Staged bank import (authentication + CSRF required in default mode)
+curl -X POST http://127.0.0.1:8000/api/v3/import/bank_csv \
+  -H 'Content-Type: text/csv' --data-binary @examples/bank-statement.csv
 ```
 
 ## How the forecast works
@@ -146,18 +179,26 @@ floatwise/
 │   ├── feature_lab.py        # Exactly 100 executable intelligence formulas
 │   ├── main.py               # FastAPI endpoints and validation
 │   ├── operations.py         # Cash, budgets, tasks, customer, views, activity
+│   ├── banking.py            # Statement adapters, partial-payment ledger, reconciliation
+│   ├── plaid.py              # Optional encrypted Plaid Link and manual transaction sync
+│   ├── security.py           # Account sessions, password hashing, private workspace scoping
 │   └── static/
 │       ├── index.html        # Responsive, accessible product interface
 │       ├── styles.css        # Design tokens and layout
 │       └── app.js            # UI state, API calls, SVG data visualization
-│       ├── lab.css           # V2 intelligence and operations interface
-│       └── lab.js            # V2 forms, records, reports, and 100-signal UI
+│       ├── lab.css           # Intelligence and operations interface
+│       ├── lab.js            # Forms, reports, and 100-signal UI
+│       ├── auth.js/css       # Session-aware access and login UI
+│       └── banking.js/css    # Statement review and Plaid Link UI
 ├── examples/invoices.csv     # Example import
+├── examples/bank-statement.csv # Example bank statement import
 ├── scripts/                   # Generate/check 100-signal feature catalog
 ├── tests/                   # Analytic and HTTP regression tests
 ├── FEATURES.md               # Exactly 100 defined, computed indicators
 ├── .github/workflows/ci.yml  # Automated CI
 ├── Dockerfile
+├── render.yaml               # Public read-only demo deployment blueprint
+├── .env.example              # Local environment-variable reference
 └── pyproject.toml
 ```
 
@@ -167,25 +208,31 @@ floatwise/
 python -m pytest -q
 python -m compileall -q app
 python -m scripts.generate_feature_catalog --check
+node --check app/static/app.js
+node --check app/static/lab.js
+node --check app/static/auth.js
+node --check app/static/banking.js
 ```
 
-Tests cover scenario ordering, empty-cash-burn forecasting, overdue risk, exact-cent invoice amounts, API mutations, date validation, CSV import/export, rollback on duplicates, the 100-feature registry, resource CRUD, budget variance, activity history, backup, and safe reminder previews.
+Tests cover scenario ordering, empty-cash-burn forecasting, overdue risk, exact-cent invoice amounts, API mutations, date validation, CSV import/export, rollback on duplicates, the 100-feature registry, resource CRUD, budget variance, activity history, backup, and safe reminder previews. V3 adds authentication and tenant-isolation tests, CSRF protection, staged import idempotency, invoice matching, partial payments, QIF/OFX/camt.053 parsing, optional Plaid token encryption, and mocked incremental bank syncs.
 
 ## Privacy and security
 
-- **Single-workspace localhost application.** Anyone who can reach the HTTP server can read or change the database. There are no logins, permissions, or tenant boundaries. Keep it private.
-- Data is stored in SQLite locally; no analytics service, telemetry, AI API, or bank feed is configured.
-- Cash movements are entered manually and are **not automatically reconciled** with paid invoices. Opening cash is a user-provided baseline, not a computed bank balance.
+- **Account-isolated local workspaces.** Passwords use per-user salted scrypt hashes. Session cookies are HttpOnly and SameSite=strict, with CSRF tokens for mutations. Separate workspace database files provide isolation for this single-process deployment. This is **not a replacement** for a thoroughly reviewed production identity, authorization, and data-protection architecture.
+- The public demo is read-only and seeded with synthetic data. Account creation can be disabled using `FLOATWISE_ALLOW_SIGNUP=0`. For HTTPS deployment enable `FLOATWISE_COOKIE_SECURE=1`.
+- Data is stored in SQLite locally; no analytics service, telemetry, or AI API is configured. Optional Plaid sync only runs when the operator explicitly connects and triggers it, with account-specific access tokens encrypted at rest.
+- Imported bank movements are **never posted or reconciled automatically**. Matching is heuristic and must be confirmed manually. The opening cash baseline is not a computed bank balance.
 - Demo customer names and invoices are entirely synthetic. Do not import sensitive information into a shared environment.
 - SQL uses parameterized statements; API inputs are validated; browser-rendered customer text is escaped; exported text is protected against common spreadsheet formula-prefix injection.
-- CSV uploads are limited to 1 MB and 250 records, and transaction rollbacks prevent partial data on duplicates.
+- Invoice CSV uploads are limited to 1 MB and 250 records; bank/accounting statement uploads are limited to 2 MB and 500 entries. Parser errors roll back, and unique transaction identifiers make repeat imports idempotent.
 - Operations changes are written to a lightweight activity timeline. This is not a tamper-proof regulated audit log.
 - This software provides **illustrative financial planning** only. It is not investment, accounting, lending, or financial advice.
+- Security limitations for production: no MFA, email verification, account recovery, server-side session revocation across multiple workers, distributed rate limiter, monitored alerting, immutable audit trails, or automated disaster recovery. Keep protected data off an unreviewed public deployment.
 
 ## Production roadmap
 
-1. **Security foundation:** OAuth/SSO, role-based access, tenant isolation, secrets management, audit logs, API rate limiting, CSRF/origin policy, secure deployments.
-2. **Reliable finance data:** Double-entry transaction model, ledger integration, currency handling, reconciliation, expenses schedules, actual versus forecast.
+1. **Production identity:** OAuth/SSO, MFA, email verification, password recovery, roles and permissions, centralized sessions, formal security and privacy assessment.
+2. **Reliable finance data:** Double-entry transaction model, validated accounting API OAuth sync, multi-currency conversion, reconciliation reversals, expenses schedules, actual versus forecast.
 3. **Better predictions:** Historical backtesting, customer cohort calibration, holidays and seasonality, uncertainty intervals, explainability reports.
 4. **Workflow automation:** Reminder templates, email integrations, collection notes and approvals, full invoice lifecycle.
 5. **Enterprise readiness:** PostgreSQL migrations, observability, queue workers, backup/restore, regulatory/privacy review, accessibility testing.

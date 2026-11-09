@@ -6,17 +6,19 @@ import csv
 import io
 import os
 import sqlite3
+import hmac
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from app import analytics, database, feature_lab, operations
+from app import analytics, database, feature_lab, operations, security, banking, plaid
 from app.demo import demo_invoices
 
 ROOT = Path(__file__).resolve().parent
@@ -69,6 +71,26 @@ class SettingsUpdate(BaseModel):
     monthly_expenses: Decimal = Field(ge=0, le=Decimal("1000000000"))
 
 
+class AuthCredentials(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class PartialPaymentInput(BaseModel):
+    amount: Decimal = Field(gt=0, le=Decimal('1000000000'))
+    paid_on: date
+    reference: str = Field(default='', max_length=180)
+
+
+class BankReviewInput(BaseModel):
+    action: str = Field(pattern=r'^(post|reconcile|ignore)$')
+    invoice_id: str | None = None
+
+
+class PlaidExchangeInput(BaseModel):
+    public_token: str = Field(min_length=6,max_length=2048)
+
+
 def normalize_invoice(payload: InvoiceCreate) -> dict:
     return {
         "id": str(uuid4()),
@@ -83,19 +105,122 @@ def normalize_invoice(payload: InvoiceCreate) -> dict:
     }
 
 
-def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None) -> FastAPI:
-    path = Path(db_path) if db_path is not None else DEFAULT_DB
-    database.initialize(path)
-    with database.connect(path) as connection:
+def create_app(
+    db_path: str | Path | None = None,
+    seed_demo: bool | None = None,
+    auth_mode: str | None = None,
+    auth_db_path: str | Path | None = None,
+    workspace_root: str | Path | None = None,
+) -> FastAPI:
+    mode = auth_mode or os.getenv('FLOATWISE_AUTH_MODE', 'demo')
+    if mode not in ('off', 'demo', 'required'):
+        raise ValueError('FLOATWISE_AUTH_MODE must be off, demo or required')
+    default_path = Path(db_path) if db_path is not None else (
+        DEFAULT_DB if mode == 'off' else Path(os.getenv('FLOATWISE_DEMO_DB_PATH','data/demo.sqlite3'))
+    )
+    database.initialize(default_path)
+    with database.connect(default_path) as connection:
         operations.initialize(connection)
+        banking.initialize(connection)
+        plaid.initialize(connection)
     demo_enabled = (os.environ.get("FLOATWISE_DEMO", "1") == "1") if seed_demo is None else seed_demo
     if demo_enabled:
-        with database.connect(path) as connection:
+        with database.connect(default_path) as connection:
             if connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0:
                 connection.executemany(INSERT_SQL, demo_invoices())
 
-    app = FastAPI(title="Floatwise API", version="2.0.0", description="Explainable SME receivables and finance operations intelligence")
+    auth = security.AuthService(
+        Path(auth_db_path or os.getenv('FLOATWISE_AUTH_DB_PATH','data/accounts.sqlite3')),
+        Path(workspace_root or os.getenv('FLOATWISE_WORKSPACE_ROOT','data/workspaces')),
+    ) if mode != 'off' else None
+    path = security.ScopedPath(default_path)
+    app = FastAPI(title="Floatwise API", version="3.0.0", description="Secure finance intelligence and bank-import workflows")
+    app.state.auth_mode = mode
+    app.state.auth_service = auth
     app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+
+    @app.middleware('http')
+    async def workspace_guard(request: Request, call_next):
+        route = request.url.path
+        identity = auth.identify(request.cookies.get('floatwise_session')) if auth else None
+        request.state.identity = identity
+        if route.startswith('/api/') and not route.startswith('/api/auth/') and route != '/api/health':
+            if mode != 'off':
+                if not identity and (mode == 'required' or request.method not in ('GET','HEAD','OPTIONS')):
+                    return JSONResponse({'detail':'Sign in to use a private workspace'},status_code=401)
+                if identity and request.method not in ('GET','HEAD','OPTIONS'):
+                    csrf = request.headers.get('X-CSRF-Token','')
+                    if not hmac.compare_digest(csrf,identity.csrf_token):
+                        return JSONResponse({'detail':'Missing or invalid CSRF token'},status_code=403)
+                if request.method not in ('GET','HEAD','OPTIONS') and request.headers.get('origin'):
+                    origin = urlsplit(request.headers['origin'])
+                    if origin.netloc != request.headers.get('host',''):
+                        return JSONResponse({'detail':'Cross-origin writes are not permitted'},status_code=403)
+        target = auth.workspace_path(identity.user_id) if auth and identity else default_path
+        scope_token = security.workspace_context.set(target)
+        try:
+            response = await call_next(request)
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+            return response
+        finally:
+            security.workspace_context.reset(scope_token)
+
+    def auth_response(identity: security.Identity, token: str) -> JSONResponse:
+        result = JSONResponse({'authenticated':True,'email':identity.email,
+                               'csrf_token':identity.csrf_token,'mode':mode,'read_only':False})
+        result.set_cookie('floatwise_session',token,max_age=security.SESSION_DURATION,
+                          httponly=True,secure=os.getenv('FLOATWISE_COOKIE_SECURE','0')=='1',
+                          samesite='strict',path='/')
+        return result
+
+    @app.get('/api/auth/me', tags=['Authentication'])
+    def whoami(request: Request):
+        identity = request.state.identity
+        return {'authenticated':bool(identity),'email':identity.email if identity else None,
+                'csrf_token':identity.csrf_token if identity else None,'mode':mode,
+                'read_only':not bool(identity) and mode!='off',
+                'signup_enabled':os.getenv('FLOATWISE_ALLOW_SIGNUP','1')=='1' and mode!='off'}
+
+    @app.post('/api/auth/register',tags=['Authentication'])
+    def register(request: Request, payload: AuthCredentials):
+        if not auth:
+            raise HTTPException(403,'Authentication is disabled for this local development server')
+        if os.getenv('FLOATWISE_ALLOW_SIGNUP','1')!='1':
+            raise HTTPException(403,'Registration is closed')
+        if not auth.rate_limit(f'register:{request.client.host if request.client else "unknown"}'):
+            raise HTTPException(429,'Please try again later')
+        try:
+            user_id = auth.register(payload.email,payload.password)
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(409,'This email address is already registered') from error
+        except ValueError as error:
+            raise HTTPException(422,str(error)) from error
+        token,identity = auth.new_session(user_id)
+        return auth_response(identity,token)
+
+    @app.post('/api/auth/login',tags=['Authentication'])
+    def login(request: Request, payload: AuthCredentials):
+        if not auth:
+            raise HTTPException(403,'Authentication is disabled')
+        if not auth.rate_limit(f'login:{request.client.host if request.client else "unknown"}'):
+            raise HTTPException(429,'Too many attempts. Try again later')
+        user_id = auth.login(payload.email,payload.password)
+        if not user_id:
+            raise HTTPException(401,'Incorrect email or password')
+        token,identity=auth.new_session(user_id)
+        return auth_response(identity,token)
+
+    @app.post('/api/auth/logout',tags=['Authentication'])
+    def logout(request: Request):
+        identity=request.state.identity
+        if identity and not hmac.compare_digest(request.headers.get('X-CSRF-Token',''),identity.csrf_token):
+            raise HTTPException(403,'Invalid CSRF token')
+        if auth:
+            auth.revoke(request.cookies.get('floatwise_session'))
+        result=JSONResponse({'authenticated':False})
+        result.delete_cookie('floatwise_session',path='/')
+        return result
 
     @app.get("/", include_in_schema=False)
     def index():
@@ -103,7 +228,7 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
 
     @app.get("/api/health", tags=["System"])
     def health():
-        return {"status": "ok", "database": "sqlite", "mode": "single-workspace-demo"}
+        return {"status": "ok", "database": "sqlite", "mode": mode}
 
     @app.get("/api/dashboard", tags=["Analytics"])
     def dashboard():
@@ -146,6 +271,8 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
             invoice = connection.execute("SELECT issued_on FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
             if not invoice:
                 raise HTTPException(404, "Invoice not found")
+            if connection.execute("SELECT 1 FROM invoice_payments WHERE invoice_id = ? LIMIT 1", (invoice_id,)).fetchone():
+                raise HTTPException(409, "This invoice uses the partial-payment ledger; update individual payments instead")
             if payload.paid_on and payload.paid_on < date.fromisoformat(invoice["issued_on"]):
                 raise HTTPException(422, "Payment cannot precede invoice issue date")
             connection.execute(
@@ -291,6 +418,112 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
         with database.connect(path) as connection:
             return analytics.forecast(database.fetch_invoices(connection),
                                       database.fetch_settings(connection),date.today(),horizon=days)
+
+    @app.get('/api/v3/import/formats',tags=['Banking and Reconciliation'])
+    def statement_formats():
+        return {'formats':list(banking.FORMATS),
+                'note':'Imports stage transactions for review. No bank is contacted.'}
+
+    @app.get('/api/v3/plaid/status',tags=['Bank Connections'])
+    def plaid_status():
+        with database.connect(path) as connection:
+            connected=plaid.links(connection)
+        return {'configured':plaid.configured(),
+                'environment':os.getenv('PLAID_ENV','sandbox') if plaid.configured() else None,
+                'connections':connected}
+
+    @app.post('/api/v3/plaid/link-token',tags=['Bank Connections'])
+    def plaid_link_token(request: Request):
+        identity=request.state.identity
+        try:
+            token=plaid.link_token(identity.user_id if identity else 'local-development-user')
+            return {'link_token':token}
+        except (plaid.PlaidUnavailable,ValueError) as error:
+            raise HTTPException(503,str(error)) from error
+
+    @app.post('/api/v3/plaid/exchange',tags=['Bank Connections'])
+    def plaid_exchange(payload: PlaidExchangeInput):
+        try:
+            with database.connect(path) as connection:
+                return plaid.exchange(connection,payload.public_token)
+        except (plaid.PlaidUnavailable,ValueError) as error:
+            raise HTTPException(422,str(error)) from error
+
+    @app.post('/api/v3/plaid/{link_id}/sync',tags=['Bank Connections'])
+    def plaid_sync(link_id: str):
+        try:
+            with database.connect(path) as connection:
+                return plaid.sync(connection,link_id)
+        except (plaid.PlaidUnavailable,ValueError) as error:
+            raise HTTPException(422,str(error)) from error
+
+    @app.post('/api/v3/import/{fmt}',tags=['Banking and Reconciliation'])
+    async def import_statement(fmt: str, request: Request):
+        if fmt not in banking.FORMATS:
+            raise HTTPException(404,'Unsupported import format')
+        try:
+            if int(request.headers.get('content-length','0') or '0')>banking.MAX_BYTES:
+                raise HTTPException(413,'Statement exceeds 2 MB')
+        except ValueError as error:
+            raise HTTPException(400,'Invalid Content-Length header') from error
+        body=await request.body()
+        if len(body)>banking.MAX_BYTES:
+            raise HTTPException(413,'Statement exceeds 2 MB')
+        try:
+            records=banking.parse_import(fmt,body)
+        except ValueError as error:
+            raise HTTPException(422,str(error)) from error
+        with database.connect(path) as connection:
+            return banking.ingest(connection,fmt,records)
+
+    @app.get('/api/v3/bank-transactions',tags=['Banking and Reconciliation'])
+    def bank_transaction_list(status: str | None=None):
+        if status and status not in ('unreviewed','posted','matched','ignored'):
+            raise HTTPException(422,'Invalid transaction state')
+        with database.connect(path) as connection:
+            rows=banking.get_transactions(connection,status)
+        return {'items':rows,'unreviewed':sum(i['status']=='unreviewed' for i in rows)}
+
+    @app.get('/api/v3/bank-transactions/{transaction_id}/suggestions',tags=['Banking and Reconciliation'])
+    def reconcile_suggestions(transaction_id: str):
+        with database.connect(path) as connection:
+            return {'matches':banking.suggestions(connection,transaction_id),
+                    'note':'Suggestions are heuristic; a person must confirm any match.'}
+
+    @app.post('/api/v3/bank-transactions/{transaction_id}/review',tags=['Banking and Reconciliation'])
+    def review_transaction(transaction_id: str, payload: BankReviewInput):
+        try:
+            with database.connect(path) as connection:
+                return banking.review(connection,transaction_id,payload.action,payload.invoice_id)
+        except ValueError as error:
+            raise HTTPException(422,str(error)) from error
+
+    @app.get('/api/v3/invoices/{invoice_id}/payments',tags=['Payments'])
+    def invoice_payments(invoice_id: str):
+        with database.connect(path) as connection:
+            balance=banking.get_invoice_balance(connection,invoice_id)
+            if balance is None:
+                raise HTTPException(404,'Invoice not found')
+            return {'invoice':balance,'payments':banking.payment_history(connection,invoice_id)}
+
+    @app.post('/api/v3/invoices/{invoice_id}/payments',status_code=201,tags=['Payments'])
+    def record_partial_payment(invoice_id: str, payload: PartialPaymentInput):
+        try:
+            with database.connect(path) as connection:
+                return banking.record_payment(connection,invoice_id,as_cents(payload.amount),
+                                              payload.paid_on.isoformat(),payload.reference)
+        except ValueError as error:
+            raise HTTPException(422,str(error)) from error
+
+    @app.delete('/api/v3/payments/{payment_id}',status_code=204,tags=['Payments'])
+    def remove_partial_payment(payment_id: str):
+        try:
+            with database.connect(path) as connection:
+                if not banking.undo_payment(connection,payment_id):
+                    raise HTTPException(404,'Payment not found')
+        except ValueError as error:
+            raise HTTPException(409,str(error)) from error
+        return Response(status_code=204)
 
     @app.get('/api/v2/reminders', tags=['Collections'])
     def reminder_drafts():
