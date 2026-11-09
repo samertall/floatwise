@@ -2,6 +2,10 @@
 
 **Know what's coming.** An open-source receivables, cash-flow, and finance operations cockpit for small businesses.
 
+### [Launch the live public demo →](https://floatwise-demo.vercel.app)
+
+Explore the fully interactive, read-only showcase with synthetic data, 100 explainable finance signals, and three cash-flow forecast scenarios. [Browse the API documentation](https://floatwise-demo.vercel.app/docs) or [view the latest GitHub Actions tests](https://github.com/samertall/floatwise/actions).
+
 > **Version 3.0** adds account authentication, isolated private workspaces, a read-only public demo, six statement-import adapters, partial payments, a bank reconciliation inbox, and an optional Plaid connector. The existing **100 live computed finance signals** and Operations Hub remain available.
 
 **Product concept and implementation by [Samer Tallauze](https://samertall.com).**
