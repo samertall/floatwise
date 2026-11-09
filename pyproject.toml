@@ -31,3 +31,6 @@ app = ["static/*"]
 testpaths = ["tests"]
 addopts = "-ra"
 
+[tool.vercel]
+entrypoint = "app.main:app"
+

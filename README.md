@@ -91,6 +91,10 @@ Plaid uses its own fees and activation requirements; sandbox credentials only co
 
 [`render.yaml`](render.yaml) defines a public **read-only** demo: authentication enabled, signups disabled, HTTPS-only cookies, a health check, and a persistent SQLite volume. To activate it, connect this GitHub repository to a [Render Blueprint](https://render.com/docs/infrastructure-as-code), review the configuration and charges, and deploy. Render provides the public URL after deployment—**GitHub upload alone does not host the Python API**.
 
+**Vercel (recommended for a disposable portfolio demo):** The existing FastAPI application is supported by Vercel's Python Functions. `pyproject.toml` declares its `app.main:app` entrypoint, and `.python-version` pins Python 3.12. Linking this GitHub repository to a Vercel project is sufficient to build it. Vercel sets `VERCEL=1` for deployed functions, which activates a **non-persistent public demonstration**: the synthetic SQLite database lives under `/tmp`, is re-created when a Function instance starts, and is never authoritative. Account creation, sign-in, and *all financial writes* are disabled server-side even if a deployment accidentally enables signup or the local development mode. The sample forecasts, 100 signals, invoice searches, and scenario controls remain usable. The interface hides write controls in this mode.
+
+> This Vercel mode is intentionally **not** a multi-user SaaS offering. Do not enable real bank sync, registration, or sensitive data on ephemeral storage. For private persistent workspaces, migrate the application to a managed serverless database and review the authentication architecture first.
+
 **Cost note:** Render persistent disks require a paid service, and disk-attached instances cannot horizontally scale or perform zero-downtime redeploys. Do not set up this deployment with actual user financial data; for real multi-tenant operation, migrate to a managed database and production identity stack. If you want an invitation-only private pilot, change `FLOATWISE_ALLOW_SIGNUP=1` temporarily for onboarding, then disable it; configure backups and access controls first.
 
 ## API walkthrough

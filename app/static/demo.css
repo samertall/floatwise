@@ -1,0 +1,16 @@
+/* The Vercel public showcase offers safe exploration without write controls. */
+body.public-demo [data-open-invoice],
+body.public-demo #side-import,
+body.public-demo #import-invoices,
+body.public-demo #bank-upload,
+body.public-demo #plaid-connect,
+body.public-demo #ops-add,
+body.public-demo .ops-item-actions,
+body.public-demo .table-action[data-pay-id],
+body.public-demo .bank-review-actions,
+body.public-demo .auth-open,
+body.public-demo #auth-backdrop {display:none!important}
+body.public-demo #settings-form input{background:#f3f8f5;cursor:not-allowed}
+body.public-demo .bank-hero{background:linear-gradient(112deg,#0d3329,#1b6d50)}
+.site-footer a{color:#238b63;text-decoration:none;font-weight:760}
+.site-footer a:hover{text-decoration:underline}

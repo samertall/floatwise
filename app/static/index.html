@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/lab.css">
   <link rel="stylesheet" href="/static/auth.css">
   <link rel="stylesheet" href="/static/banking.css">
+  <link rel="stylesheet" href="/static/demo.css">
   <script src="/static/auth.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lab.js" defer></script>
@@ -88,7 +89,7 @@
           <p class="footnote">File imports do not contact any bank. Matching suggestions are heuristic and require review. Uploaded financial data stays in your current workspace.</p>
         </section>
       </div>
-      <footer class="site-footer"><span>© <span id="footer-year"></span> Floatwise <span class="separator">·</span> An open-source product concept</span><span>Designed for clarity. Built with Python. <span class="footer-heart">♥</span></span></footer>
+      <footer class="site-footer"><span>© <span id="footer-year"></span> Floatwise <span class="separator">·</span> <a href="https://github.com/samertall/floatwise" target="_blank" rel="noopener noreferrer">View source on GitHub ↗</a></span><span>Designed &amp; developed by <a href="https://samertall.com" target="_blank" rel="noopener noreferrer">Samer Tallauze ↗</a> <span class="footer-heart">♥</span></span></footer>
     </main>
   </div>
   <div class="dialog-backdrop hidden" id="invoice-backdrop"><section class="invoice-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-head"><div><span class="section-kicker">RECORD A RECEIVABLE</span><h2 id="dialog-title">Create an invoice</h2><p>Add an invoice to update your forecast instantly.</p></div><button id="close-dialog" class="close-btn" aria-label="Close dialog">×</button></div><form id="invoice-form"><div class="field-row"><label>Invoice number<input name="invoice_number" required maxlength="36" pattern="[A-Za-z0-9][A-Za-z0-9_\-/]*" placeholder="INV-2026-001"></label><label>Amount (USD)<input name="amount" type="number" step="0.01" min="0.01" required placeholder="2500.00"></label></div><label>Customer / business<input name="customer" required minlength="2" maxlength="100" placeholder="Acme Corporation"></label><div class="field-row"><label>Issue date<input name="issued_on" id="issued-date" type="date" required></label><label>Due date<input name="due_on" id="due-date" type="date" required></label></div><label>Notes (optional)<textarea name="notes" rows="3" maxlength="500" placeholder="Project, payment terms, or reference..."></textarea></label><div class="dialog-actions"><button type="button" class="btn btn-outline" id="cancel-dialog">Cancel</button><button type="submit" class="btn btn-primary">Create invoice <span>↗</span></button></div></form></section></div>

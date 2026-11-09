@@ -112,18 +112,22 @@ def create_app(
     auth_db_path: str | Path | None = None,
     workspace_root: str | Path | None = None,
 ) -> FastAPI:
-    mode = auth_mode or os.getenv('FLOATWISE_AUTH_MODE', 'demo')
+    # Vercel Functions have no persistent local SQLite disk. A public showcase
+    # must never create accounts or accept financial writes on ephemeral storage.
+    vercel_demo = os.getenv('VERCEL') == '1'
+    mode = 'demo' if vercel_demo else (auth_mode or os.getenv('FLOATWISE_AUTH_MODE', 'demo'))
     if mode not in ('off', 'demo', 'required'):
         raise ValueError('FLOATWISE_AUTH_MODE must be off, demo or required')
     default_path = Path(db_path) if db_path is not None else (
-        DEFAULT_DB if mode == 'off' else Path(os.getenv('FLOATWISE_DEMO_DB_PATH','data/demo.sqlite3'))
+        Path('/tmp/floatwise-public-demo.sqlite3') if vercel_demo else
+        (DEFAULT_DB if mode == 'off' else Path(os.getenv('FLOATWISE_DEMO_DB_PATH','data/demo.sqlite3')))
     )
     database.initialize(default_path)
     with database.connect(default_path) as connection:
         operations.initialize(connection)
         banking.initialize(connection)
         plaid.initialize(connection)
-    demo_enabled = (os.environ.get("FLOATWISE_DEMO", "1") == "1") if seed_demo is None else seed_demo
+    demo_enabled = (True if vercel_demo else os.environ.get("FLOATWISE_DEMO", "1") == "1") if seed_demo is None else seed_demo
     if demo_enabled:
         with database.connect(default_path) as connection:
             if connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0:
@@ -132,7 +136,7 @@ def create_app(
     auth = security.AuthService(
         Path(auth_db_path or os.getenv('FLOATWISE_AUTH_DB_PATH','data/accounts.sqlite3')),
         Path(workspace_root or os.getenv('FLOATWISE_WORKSPACE_ROOT','data/workspaces')),
-    ) if mode != 'off' else None
+    ) if mode != 'off' and not vercel_demo else None
     path = security.ScopedPath(default_path)
     app = FastAPI(title="Floatwise API", version="3.0.0", description="Secure finance intelligence and bank-import workflows")
     app.state.auth_mode = mode
@@ -180,7 +184,8 @@ def create_app(
         return {'authenticated':bool(identity),'email':identity.email if identity else None,
                 'csrf_token':identity.csrf_token if identity else None,'mode':mode,
                 'read_only':not bool(identity) and mode!='off',
-                'signup_enabled':os.getenv('FLOATWISE_ALLOW_SIGNUP','1')=='1' and mode!='off'}
+                'signup_enabled':bool(auth) and os.getenv('FLOATWISE_ALLOW_SIGNUP','1')=='1',
+                'login_enabled':bool(auth)}
 
     @app.post('/api/auth/register',tags=['Authentication'])
     def register(request: Request, payload: AuthCredentials):
@@ -428,8 +433,9 @@ def create_app(
     def plaid_status():
         with database.connect(path) as connection:
             connected=plaid.links(connection)
-        return {'configured':plaid.configured(),
-                'environment':os.getenv('PLAID_ENV','sandbox') if plaid.configured() else None,
+        available=plaid.configured() and not vercel_demo
+        return {'configured':available,
+                'environment':os.getenv('PLAID_ENV','sandbox') if available else None,
                 'connections':connected}
 
     @app.post('/api/v3/plaid/link-token',tags=['Bank Connections'])

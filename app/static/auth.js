@@ -4,6 +4,7 @@
   let csrf = null;
   let mode = 'login';
   let authMode = 'demo';
+  let publicDemo = false;
   const $ = selector => document.querySelector(selector);
 
   function openAuth() {
@@ -29,12 +30,15 @@
     const identity = await response.json();
     csrf = identity.csrf_token;
     authMode = identity.mode;
+    publicDemo = identity.read_only && !identity.login_enabled;
+    document.body.classList.toggle('public-demo',publicDemo);
     $('#auth-register-tab').classList.toggle('hidden', !identity.signup_enabled);
     const signedIn = identity.authenticated;
-    $('#auth-open').classList.toggle('hidden',signedIn || authMode==='off');
+    $('#auth-open').classList.toggle('hidden',signedIn || authMode==='off' || publicDemo);
     $('#auth-logout').classList.toggle('hidden',!signedIn);
     $('#auth-open').textContent = signedIn ? identity.email : 'Sign in';
     $('.mode-tag').textContent = signedIn ? 'PRIVATE WORKSPACE' : authMode === 'off' ? 'LOCAL DEV' : 'READ-ONLY DEMO';
+    $('#settings-form').querySelectorAll('input,button').forEach(element=>{element.disabled=publicDemo;});
   }
 
   async function authenticatedFetch(path, options={}) {
@@ -43,7 +47,7 @@
       headers.set('X-CSRF-Token',csrf);
     }
     const response = await fetch(path,{...options,headers});
-    if(response.status===401 && !path.startsWith('/api/auth/'))openAuth();
+    if(response.status===401 && !path.startsWith('/api/auth/') && !publicDemo)openAuth();
     return response;
   }
 
