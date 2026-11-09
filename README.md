@@ -1,8 +1,8 @@
 # Floatwise
 
-**Know what's coming.** An open-source receivables intelligence and cash-flow planning platform for small businesses.
+**Know what's coming.** An open-source receivables, cash-flow, and finance operations cockpit for small businesses.
 
-> A Python FastAPI + SQLite product concept with a responsive analytics dashboard, explainable 90-day forecasting, invoice management, CSV import/export, and automated tests.
+> Version 2.0 adds an **Intelligence Lab with 100 live computed finance signals** and an **Operations Hub** for cash movements, budgets, tasks, customer profiles, and saved views, alongside the original forecasting dashboard.
 
 **Product concept and implementation by [Samer Tallauze](https://samertall.com).**
 
@@ -32,6 +32,14 @@ This repository is a *working single-workspace MVP and engineering showcase*, no
 | Developer API | OpenAPI documentation at `/docs` and `/openapi.json` |
 | Demo-friendly | Synthetic invoices are added to an empty demo database |
 | Tested and containerized | Pytest, GitHub Actions, Docker, API health endpoint |
+| 100-signal Intelligence Lab | Ten groups of ten independent calculated signals, with search, filters, and CSV export |
+| Operations Hub | Create, edit, and delete cash events, monthly budgets, follow-up tasks, customer profiles, and saved views |
+| Payment reminder drafts | Prioritized human-review messages; nothing is sent automatically |
+| Activity timeline | Records creates, updates, imports, payments, and deletions |
+| Reporting and backups | CSV and JSON resource reports, 100-signal exports, local JSON backup |
+| Flexible horizons | API forecast from 7 through 365 days |
+
+See **[FEATURES.md](FEATURES.md)** for the exact definitions of all 100 new signals. The count refers to individually implemented intelligence calculations, **not** 100 separate enterprise modules. Their values update from actual workspace data.
 
 **No third-party JavaScript, external font requests, analytics trackers, bank integrations, or LLM calls.** The UI works from the same Python server.
 
@@ -86,6 +94,25 @@ curl -o invoices.csv http://127.0.0.1:8000/api/export
 curl -X PATCH http://127.0.0.1:8000/api/settings \
   -H 'Content-Type: application/json' \
   -d '{"opening_balance":"68000.00","monthly_expenses":"18500.00"}'
+
+# Explore 100 computed signals and underlying finance records
+curl http://127.0.0.1:8000/api/v2/features
+curl http://127.0.0.1:8000/api/v2/workspace
+
+# Create a manual expense entry (for budgets and cash signals)
+curl -X POST http://127.0.0.1:8000/api/v2/cash \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Office rent","kind":"expense","amount":"900.00","occurs_on":"2026-11-09","category":"Facilities"}'
+
+# Create a budget category
+curl -X POST http://127.0.0.1:8000/api/v2/budgets \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"Facilities","monthly_limit":"1200.00"}'
+
+# More planning and reporting
+curl 'http://127.0.0.1:8000/api/v2/forecast?days=180'
+curl 'http://127.0.0.1:8000/api/v2/reports/features?format=csv' -o signals.csv
+curl http://127.0.0.1:8000/api/v2/backup -o backup.json
 ```
 
 ## How the forecast works
@@ -116,13 +143,19 @@ floatwise/
 │   ├── analytics.py          # Pure deterministic projections and priorities
 │   ├── database.py           # SQLite schema and transaction boundaries
 │   ├── demo.py               # Synthetic customer invoices
+│   ├── feature_lab.py        # Exactly 100 executable intelligence formulas
 │   ├── main.py               # FastAPI endpoints and validation
+│   ├── operations.py         # Cash, budgets, tasks, customer, views, activity
 │   └── static/
 │       ├── index.html        # Responsive, accessible product interface
 │       ├── styles.css        # Design tokens and layout
 │       └── app.js            # UI state, API calls, SVG data visualization
+│       ├── lab.css           # V2 intelligence and operations interface
+│       └── lab.js            # V2 forms, records, reports, and 100-signal UI
 ├── examples/invoices.csv     # Example import
+├── scripts/                   # Generate/check 100-signal feature catalog
 ├── tests/                   # Analytic and HTTP regression tests
+├── FEATURES.md               # Exactly 100 defined, computed indicators
 ├── .github/workflows/ci.yml  # Automated CI
 ├── Dockerfile
 └── pyproject.toml
@@ -133,17 +166,20 @@ floatwise/
 ```bash
 python -m pytest -q
 python -m compileall -q app
+python -m scripts.generate_feature_catalog --check
 ```
 
-Tests cover scenario ordering, empty-cash-burn forecasting, overdue risk, exact-cent invoice amounts, API mutations, date validation, CSV import/export, and batch rollback on duplicate invoice numbers.
+Tests cover scenario ordering, empty-cash-burn forecasting, overdue risk, exact-cent invoice amounts, API mutations, date validation, CSV import/export, rollback on duplicates, the 100-feature registry, resource CRUD, budget variance, activity history, backup, and safe reminder previews.
 
 ## Privacy and security
 
 - **Single-workspace localhost application.** Anyone who can reach the HTTP server can read or change the database. There are no logins, permissions, or tenant boundaries. Keep it private.
 - Data is stored in SQLite locally; no analytics service, telemetry, AI API, or bank feed is configured.
+- Cash movements are entered manually and are **not automatically reconciled** with paid invoices. Opening cash is a user-provided baseline, not a computed bank balance.
 - Demo customer names and invoices are entirely synthetic. Do not import sensitive information into a shared environment.
 - SQL uses parameterized statements; API inputs are validated; browser-rendered customer text is escaped; exported text is protected against common spreadsheet formula-prefix injection.
 - CSV uploads are limited to 1 MB and 250 records, and transaction rollbacks prevent partial data on duplicates.
+- Operations changes are written to a lightweight activity timeline. This is not a tamper-proof regulated audit log.
 - This software provides **illustrative financial planning** only. It is not investment, accounting, lending, or financial advice.
 
 ## Production roadmap

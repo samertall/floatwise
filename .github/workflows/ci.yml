@@ -17,6 +17,12 @@ jobs:
         run: python -m pip install -e '.[dev]'
       - name: Run test suite
         run: python -m pytest -q
+      - name: Verify 100-feature catalog
+        run: python -m scripts.generate_feature_catalog --check
       - name: Compile Python files
         run: python -m compileall -q app
+      - name: Check JavaScript syntax
+        run: |
+          node --check app/static/app.js
+          node --check app/static/lab.js
 

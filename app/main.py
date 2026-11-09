@@ -14,9 +14,9 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from app import analytics, database
+from app import analytics, database, feature_lab, operations
 from app.demo import demo_invoices
 
 ROOT = Path(__file__).resolve().parent
@@ -86,13 +86,15 @@ def normalize_invoice(payload: InvoiceCreate) -> dict:
 def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None) -> FastAPI:
     path = Path(db_path) if db_path is not None else DEFAULT_DB
     database.initialize(path)
+    with database.connect(path) as connection:
+        operations.initialize(connection)
     demo_enabled = (os.environ.get("FLOATWISE_DEMO", "1") == "1") if seed_demo is None else seed_demo
     if demo_enabled:
         with database.connect(path) as connection:
             if connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0:
                 connection.executemany(INSERT_SQL, demo_invoices())
 
-    app = FastAPI(title="Floatwise API", version="1.0.0", description="Explainable SME receivables intelligence")
+    app = FastAPI(title="Floatwise API", version="2.0.0", description="Explainable SME receivables and finance operations intelligence")
     app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
     @app.get("/", include_in_schema=False)
@@ -133,6 +135,7 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
         try:
             with database.connect(path) as connection:
                 connection.execute(INSERT_SQL, row)
+                operations.activity(connection, 'created', 'invoices', row['id'])
         except sqlite3.IntegrityError as error:
             raise HTTPException(409, "Invoice number already exists") from error
         return row
@@ -149,6 +152,7 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
                 "UPDATE invoices SET paid_on = ? WHERE id = ?",
                 (payload.paid_on.isoformat() if payload.paid_on else None, invoice_id),
             )
+            operations.activity(connection, 'payment_updated', 'invoices', invoice_id)
             return dict(connection.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,)).fetchone())
 
     @app.delete("/api/invoices/{invoice_id}", status_code=204, tags=["Invoices"])
@@ -157,6 +161,7 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
             cursor = connection.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
             if not cursor.rowcount:
                 raise HTTPException(404, "Invoice not found")
+            operations.activity(connection, 'deleted', 'invoices', invoice_id)
         return Response(status_code=204)
 
     @app.patch("/api/settings", tags=["Settings"])
@@ -167,6 +172,7 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
         }
         with database.connect(path) as connection:
             connection.executemany("UPDATE settings SET value = ? WHERE key = ?", ((v, k) for k, v in values.items()))
+            operations.activity(connection, 'updated', 'settings', 'financial-baseline')
         return values
 
     @app.post("/api/import", tags=["Invoices"])
@@ -200,6 +206,8 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
         try:
             with database.connect(path) as connection:
                 connection.executemany(INSERT_SQL, rows)
+                for row in rows:
+                    operations.activity(connection, 'imported', 'invoices', row['id'])
         except sqlite3.IntegrityError as error:
             raise HTTPException(409, "Duplicate invoice number in import or database; no rows imported") from error
         return {"imported": len(rows)}
@@ -222,6 +230,133 @@ def create_app(db_path: str | Path | None = None, seed_demo: bool | None = None)
                 "amount": f"{Decimal(row['amount_cents']) / 100:.2f}",
             })
         return Response(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="floatwise-invoices.csv"'})
+
+    # V2: a small finance operations layer under the existing public API.
+    @app.get('/api/v2/features', tags=['Intelligence Lab'])
+    def intelligence_features():
+        with database.connect(path) as connection:
+            invoices = database.fetch_invoices(connection)
+            settings = database.fetch_settings(connection)
+            resources = operations.get_all(connection)
+        return feature_lab.evaluate_features(invoices, resources, settings, date.today())
+
+    @app.get('/api/v2/workspace', tags=['Operations'])
+    def operations_workspace():
+        with database.connect(path) as connection:
+            return {
+                'resources': operations.get_all(connection),
+                'activity': operations.get_activity(connection),
+            }
+
+    @app.get('/api/v2/activity', tags=['Operations'])
+    def activity_feed():
+        with database.connect(path) as connection:
+            return {'items': operations.get_activity(connection)}
+
+    @app.get('/api/v2/backup', tags=['Reports'])
+    def backup():
+        with database.connect(path) as connection:
+            data = operations.backup_data(connection)
+        return Response(
+            __import__('json').dumps(data, indent=2), media_type='application/json',
+            headers={'Content-Disposition':'attachment; filename="floatwise-backup.json"'},
+        )
+
+    @app.get('/api/v2/reports/{resource}', tags=['Reports'])
+    def reports(resource: str, format: str = 'csv'):
+        if resource not in (*operations.TABLES.keys(), 'invoices', 'features'):
+            raise HTTPException(404, 'Unknown report')
+        if format not in ('csv', 'json'):
+            raise HTTPException(422, 'Choose csv or json')
+        with database.connect(path) as connection:
+            if resource == 'invoices':
+                rows = database.fetch_invoices(connection)
+            elif resource == 'features':
+                rows = feature_lab.evaluate_features(
+                    database.fetch_invoices(connection), operations.get_all(connection),
+                    database.fetch_settings(connection), date.today(),
+                )['features']
+            else:
+                rows = operations.get_rows(connection, resource)
+        if format == 'json':
+            return Response(__import__('json').dumps(rows, indent=2), media_type='application/json',
+                            headers={'Content-Disposition':f'attachment; filename="floatwise-{resource}.json"'})
+        return Response(operations.report_csv(rows), media_type='text/csv',
+                        headers={'Content-Disposition':f'attachment; filename="floatwise-{resource}.csv"'})
+
+    @app.get('/api/v2/forecast', tags=['Intelligence Lab'])
+    def flexible_forecast(days: int = 90):
+        if not 7 <= days <= 365:
+            raise HTTPException(422, 'Forecast horizon must be 7 to 365 days')
+        with database.connect(path) as connection:
+            return analytics.forecast(database.fetch_invoices(connection),
+                                      database.fetch_settings(connection),date.today(),horizon=days)
+
+    @app.get('/api/v2/reminders', tags=['Collections'])
+    def reminder_drafts():
+        with database.connect(path) as connection:
+            invoices = database.fetch_invoices(connection)
+        today = date.today()
+        scores = analytics.customer_lateness(invoices)
+        queue = [analytics.collection_priority(i,today,scores) for i in invoices if not i['paid_on']]
+        queue.sort(key=lambda i:(-i['risk_score'],i['due_on']))
+        drafts = []
+        for item in queue[:20]:
+            status = f"{item['days_overdue']} days overdue" if item['days_overdue'] else f"due on {item['due_on']}"
+            drafts.append({
+                'invoice_id':item['id'],
+                'subject':f"Payment reminder for invoice {item['invoice_number']}",
+                'body':f"Hello {item['customer']},\n\nThis is a friendly reminder that invoice {item['invoice_number']} for ${item['amount_cents']/100:,.2f} is {status}. Please let us know when we can expect payment.\n\nThank you.",
+                'risk_level':item['risk_level'],
+            })
+        return {'drafts':drafts, 'disclaimer':'Drafts are not sent and must be reviewed by a person.'}
+
+    @app.get('/api/v2/{resource}', tags=['Operations'])
+    def resource_list(resource: str):
+        if resource not in operations.TABLES:
+            raise HTTPException(404, 'Unknown resource')
+        with database.connect(path) as connection:
+            return {'items':operations.get_rows(connection, resource)}
+
+    @app.post('/api/v2/{resource}', status_code=201, tags=['Operations'])
+    def resource_add(resource: str, payload: dict):
+        if resource not in operations.TABLES:
+            raise HTTPException(404, 'Unknown resource')
+        try:
+            validated = operations.MODELS[resource].model_validate(payload)
+        except ValidationError as error:
+            raise HTTPException(422, error.errors(include_url=False, include_context=False)) from error
+        try:
+            with database.connect(path) as connection:
+                return operations.create(connection, resource, validated)
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(409, 'A record with this unique name or category already exists') from error
+
+    @app.put('/api/v2/{resource}/{item_id}', tags=['Operations'])
+    def resource_replace(resource: str, item_id: str, payload: dict):
+        if resource not in operations.TABLES:
+            raise HTTPException(404, 'Unknown resource')
+        try:
+            validated = operations.MODELS[resource].model_validate(payload)
+        except ValidationError as error:
+            raise HTTPException(422, error.errors(include_url=False, include_context=False)) from error
+        try:
+            with database.connect(path) as connection:
+                row = operations.update(connection,resource,item_id,validated)
+                if row is None:
+                    raise HTTPException(404, 'Record not found')
+                return row
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(409, 'A record with this unique name or category already exists') from error
+
+    @app.delete('/api/v2/{resource}/{item_id}', status_code=204, tags=['Operations'])
+    def resource_delete(resource: str, item_id: str):
+        if resource not in operations.TABLES:
+            raise HTTPException(404, 'Unknown resource')
+        with database.connect(path) as connection:
+            if not operations.remove(connection,resource,item_id):
+                raise HTTPException(404, 'Record not found')
+        return Response(status_code=204)
 
     return app
 

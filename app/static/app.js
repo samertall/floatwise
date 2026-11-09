@@ -173,7 +173,7 @@
       element.classList.toggle('active',active);
       if (active) element.setAttribute('aria-current','page'); else element.removeAttribute('aria-current');
     });
-    $('#breadcrumb-view').textContent = ({overview:'Overview',invoices:'Receivables',forecast:'Forecast studio'})[view];
+    $('#breadcrumb-view').textContent = ({overview:'Overview',invoices:'Receivables',forecast:'Forecast studio',lab:'Intelligence lab',operations:'Operations hub'})[view];
     window.scrollTo({top:0,behavior:'smooth'});
   }
 
@@ -247,6 +247,7 @@
     ['#side-import','#import-invoices'].forEach(s => $(s).addEventListener('click',()=>$('#csv-file').click()));
     ['#side-export','#export-invoices'].forEach(s => $(s).addEventListener('click',()=>{window.location.href='/api/export';}));
     $('#csv-file').addEventListener('change',handleImport);
+    window.addEventListener('floatwise:updated',refresh);
     refresh();
   }
 
